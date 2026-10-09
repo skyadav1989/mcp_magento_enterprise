@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     max_description_length: int = 5000
     approval_ttl_seconds: int = 600
     http_timeout_seconds: float = 30.0
+    admin_password: str = 'admin123'
 
     # CORS / transport security
     allowed_origins: str = ''

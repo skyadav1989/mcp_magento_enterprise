@@ -7,6 +7,7 @@ from .approvals import ApprovalStore
 from .config import get_settings
 from .mcp_server import build_server
 from .oauth_server import OAuthStore, register_routes
+from .dashboard import register_dashboard
 from .security import JWTVerifier
 from .db.database import init_db, SessionLocal
 
@@ -39,6 +40,7 @@ async def lifespan(app):
 
 app=FastAPI(title=settings.app_name,version=settings.app_version,lifespan=lifespan)
 register_routes(app,settings,oauth)
+register_dashboard(app, approvals)
 bearer=HTTPBearer(auto_error=True)
 
 @app.get('/health')

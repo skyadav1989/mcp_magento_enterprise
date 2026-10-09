@@ -62,3 +62,11 @@ class ApprovalStore:
             return False
         del self._items[approval_id]
         return True
+
+    def list_all(self) -> list[Approval]:
+        now = time.time()
+        # Clean expired
+        expired = [k for k, v in self._items.items() if v.expires_at < now]
+        for k in expired:
+            del self._items[k]
+        return sorted(self._items.values(), key=lambda a: a.expires_at, reverse=True)
