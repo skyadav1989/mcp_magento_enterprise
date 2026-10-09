@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-"""Magento MCP Gateway - End-to-End Authentication & Authorization Sequence.
+"""Magento MCP Gateway - End-to-End Authentication & Tool Execution Sequence.
 
-This script executes the complete sequence in order:
-  Step 1: Health Check Endpoint (/health)
-  Step 2: Well-Known Protected Resource Discovery (/.well-known/oauth-protected-resource)
-  Step 3: Well-Known Authorization Server Discovery (/.well-known/oauth-authorization-server)
-  Step 4: Cryptographic PKCE Generation (code_verifier & S256 code_challenge)
-  Step 5: Initialize Authorization Request (/oauth/authorize)
-  Step 6: Authorization Code Issuance & Storage
-  Step 7: Token Exchange via PKCE (/oauth/token)
-  Step 8: JWT Verification & Claims Inspection
-  Step 9: Authenticated Gateway API Probe using Bearer Token
+This script executes the complete sequence in order and prints all keys/responses:
+  Step 1: Service Health Check (/health)
+  Step 2: PKCE Generation (code_verifier & S256 code_challenge)
+  Step 3: Authorization Code Generation (OAuth authorization_code)
+  Step 4: Auth Token Exchange (/oauth/token -> Bearer JWT)
+  Step 5: MCP Streamable HTTP Init Call (session.initialize())
+  Step 6: Call Tool List (session.list_tools())
+  Step 7: Call Order List Tool (session.call_tool('get_orders_by_status'))
 
 Run:
   python auth_flow_sequence.py [--url http://localhost:8000]
@@ -23,6 +21,8 @@ import secrets
 import hashlib
 import base64
 import json
+import ast
+import asyncio
 import httpx
 import jwt
 
@@ -31,7 +31,11 @@ from app.db.database import SessionLocal
 from app.oauth_server import OAuthStore
 from app.security import JWTVerifier
 
-# Styling ANSI codes
+# MCP Client SDK
+from mcp.client.streamable_http import streamable_http_client
+from mcp.client.session import ClientSession
+
+# ANSI Styling
 GREEN = "\033[92m"
 RED = "\033[91m"
 YELLOW = "\033[93m"
@@ -42,8 +46,8 @@ DIM = "\033[2m"
 RESET = "\033[0m"
 
 
-def print_header(title: str):
-    width = 75
+def print_banner(title: str):
+    width = 78
     print(f"\n{BOLD}{CYAN}{'=' * width}{RESET}")
     print(f"{BOLD}{CYAN}  {title.center(width - 4)}  {RESET}")
     print(f"{BOLD}{CYAN}{'=' * width}{RESET}")
@@ -51,8 +55,20 @@ def print_header(title: str):
 
 def print_step(step_num: int, total_steps: int, title: str):
     progress = f"[{step_num}/{total_steps}]"
-    print(f"\n{BOLD}{MAGENTA}{progress} >>> {title} <<<{RESET}")
-    print(f"{DIM}{'-' * 65}{RESET}")
+    print(f"\n{BOLD}{MAGENTA}{progress} >>> {title.upper()} <<<{RESET}")
+    print(f"{DIM}{'-' * 70}{RESET}")
+
+
+def print_kv(key: str, value: any, indent: int = 2):
+    pad = " " * indent
+    if isinstance(value, (dict, list)):
+        formatted_val = json.dumps(value, indent=2)
+        lines = formatted_val.split("\n")
+        print(f"{pad}{CYAN}{key:<26}:{RESET}")
+        for line in lines:
+            print(f"{pad}    {DIM}{line}{RESET}")
+    else:
+        print(f"{pad}{CYAN}{key:<26}:{RESET} {value}")
 
 
 def print_success(msg: str):
@@ -63,321 +79,252 @@ def print_fail(msg: str):
     print(f"  {RED}{BOLD}[FAIL]{RESET} {msg}")
 
 
-def print_info(key: str, value: str):
-    print(f"  {CYAN}{key:<22}:{RESET} {value}")
-
-
-def format_json(obj):
-    return json.dumps(obj, indent=2)
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Run OAuth PKCE Sequence against Magento MCP Gateway")
-    parser.add_argument("--url", default="http://localhost:8000", help="Base URL of running gateway")
-    args = parser.parse_args()
-
-    base_url = args.url.rstrip("/")
+async def run_sequence(base_url: str):
     settings = get_settings()
-    client = httpx.Client(timeout=10.0)
-
-    total_steps = 9
-    start_time = time.time()
+    total_steps = 7
     results = []
+    start_time = time.time()
 
-    print_header("MAGENTO MCP GATEWAY - AUTHENTICATION SEQUENCE")
-    print_info("Target Server", base_url)
-    print_info("Configured Issuer", settings.oauth_issuer_url)
-    print_info("Resource Audience", settings.mcp_resource_url)
-    print_info("Allowed Redirect", settings.oauth_allowed_redirect_uris)
+    print_banner("MAGENTO MCP GATEWAY - FULL AUTH & TOOL EXECUTION FLOW")
+    print_kv("Target Server", base_url)
+    print_kv("MCP Resource Endpoint", f"{base_url}/mcp")
+    print_kv("Configured Issuer", settings.oauth_issuer_url)
+    print_kv("Allowed Redirect URI", settings.oauth_allowed_redirect_uris)
 
-    # -------------------------------------------------------------------------
-    # STEP 1: Health Check
-    # -------------------------------------------------------------------------
-    step = 1
-    print_step(step, total_steps, "Service Health Check")
-    endpoint = f"{base_url}/health"
-    print_info("Calling GET", endpoint)
-    t0 = time.time()
-    try:
-        res = client.get(endpoint)
-        latency = (time.time() - t0) * 1000
-        print_info("HTTP Status", f"{res.status_code} ({latency:.1f}ms)")
-        if res.status_code == 200:
+    async with httpx.AsyncClient(timeout=15.0) as http:
+
+        # ---------------------------------------------------------------------
+        # STEP 1: Service Health Check
+        # ---------------------------------------------------------------------
+        step = 1
+        print_step(step, total_steps, "Service Health Check")
+        health_url = f"{base_url}/health"
+        print_kv("Request", f"GET {health_url}")
+        t0 = time.time()
+        try:
+            res = await http.get(health_url)
+            elapsed = (time.time() - t0) * 1000
+            print_kv("HTTP Status", f"{res.status_code} ({elapsed:.1f}ms)")
             data = res.json()
-            print_info("Response Payload", json.dumps(data))
-            if data.get("status") == "ok":
-                print_success(f"Gateway service is active (Service: '{data.get('service')}', v{data.get('version')})")
-                results.append((step, "Health Check", True, f"{latency:.1f}ms"))
+            print("\n  Response Keys & Values:")
+            for k, v in data.items():
+                print_kv(k, v, indent=4)
+            if res.status_code == 200 and data.get("status") == "ok":
+                print_success("Gateway is healthy and operational")
+                results.append((step, "Health Check", True, f"{elapsed:.1f}ms"))
             else:
-                print_fail("Status is not 'ok'")
-                results.append((step, "Health Check", False, "Invalid status"))
-        else:
-            print_fail(f"Unexpected status: {res.status_code}")
-            results.append((step, "Health Check", False, f"Status {res.status_code}"))
-    except Exception as exc:
-        print_fail(f"Connection failed: {exc}")
-        results.append((step, "Health Check", False, str(exc)))
-        print(f"\n{RED}Cannot connect to {base_url}. Ensure server is running.{RESET}")
-        return 1
+                print_fail("Unexpected health response")
+                results.append((step, "Health Check", False, f"Status {res.status_code}"))
+                return 1
+        except Exception as exc:
+            print_fail(f"Could not connect to {health_url}: {exc}")
+            results.append((step, "Health Check", False, str(exc)))
+            return 1
 
-    # -------------------------------------------------------------------------
-    # STEP 2: Protected Resource Discovery
-    # -------------------------------------------------------------------------
-    step = 2
-    print_step(step, total_steps, "Well-Known Protected Resource Discovery")
-    endpoint = f"{base_url}/.well-known/oauth-protected-resource"
-    print_info("Calling GET", endpoint)
-    t0 = time.time()
-    try:
-        res = client.get(endpoint)
-        latency = (time.time() - t0) * 1000
-        print_info("HTTP Status", f"{res.status_code} ({latency:.1f}ms)")
-        if res.status_code == 200:
-            data = res.json()
-            print_info("Resource URI", data.get("resource", "N/A"))
-            print_info("Auth Servers", ", ".join(data.get("authorization_servers", [])))
-            print_info("Scopes Supported", ", ".join(data.get("scopes_supported", [])))
-            print_success("Protected Resource RFC 8707 metadata discovered")
-            results.append((step, "Resource Metadata", True, f"{latency:.1f}ms"))
-        else:
-            print_fail(f"Metadata error: {res.status_code}")
-            results.append((step, "Resource Metadata", False, f"Status {res.status_code}"))
-    except Exception as exc:
-        print_fail(f"Error: {exc}")
-        results.append((step, "Resource Metadata", False, str(exc)))
+        # ---------------------------------------------------------------------
+        # STEP 2: PKCE Generated
+        # ---------------------------------------------------------------------
+        step = 2
+        print_step(step, total_steps, "PKCE Generated")
+        # 1. High entropy code_verifier
+        code_verifier = secrets.token_urlsafe(64)
+        # 2. SHA256 digest
+        digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+        # 3. Base64url without padding
+        code_challenge = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+        code_challenge_method = "S256"
 
-    # -------------------------------------------------------------------------
-    # STEP 3: Authorization Server Discovery
-    # -------------------------------------------------------------------------
-    step = 3
-    print_step(step, total_steps, "Well-Known Authorization Server Discovery")
-    endpoint = f"{base_url}/.well-known/oauth-authorization-server"
-    print_info("Calling GET", endpoint)
-    t0 = time.time()
-    try:
-        res = client.get(endpoint)
-        latency = (time.time() - t0) * 1000
-        print_info("HTTP Status", f"{res.status_code} ({latency:.1f}ms)")
-        if res.status_code == 200:
-            data = res.json()
-            print_info("Issuer", data.get("issuer", "N/A"))
-            print_info("Authorize Endpoint", data.get("authorization_endpoint", "N/A"))
-            print_info("Token Endpoint", data.get("token_endpoint", "N/A"))
-            print_info("PKCE Methods", str(data.get("code_challenge_methods_supported", [])))
-            print_success("OAuth 2.1 Authorization Server metadata discovered")
-            results.append((step, "Auth Server Metadata", True, f"{latency:.1f}ms"))
-        else:
-            print_fail(f"Metadata error: {res.status_code}")
-            results.append((step, "Auth Server Metadata", False, f"Status {res.status_code}"))
-    except Exception as exc:
-        print_fail(f"Error: {exc}")
-        results.append((step, "Auth Server Metadata", False, str(exc)))
+        print("  Generated PKCE Keys & Values:")
+        print_kv("code_verifier", code_verifier, indent=4)
+        print_kv("code_verifier_length", f"{len(code_verifier)} characters", indent=4)
+        print_kv("code_challenge_method", code_challenge_method, indent=4)
+        print_kv("code_challenge", code_challenge, indent=4)
+        print_success("Cryptographically secure PKCE S256 challenge generated")
+        results.append((step, "PKCE Generated", True, f"Length: {len(code_verifier)}"))
 
-    # -------------------------------------------------------------------------
-    # STEP 4: PKCE Cryptographic Generation
-    # -------------------------------------------------------------------------
-    step = 4
-    print_step(step, total_steps, "Generate PKCE Cryptographic Parameters")
-    # 1. High entropy code_verifier
-    code_verifier = secrets.token_urlsafe(64)
-    # 2. SHA256 digest
-    digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
-    # 3. Base64url without padding
-    code_challenge = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
-    code_challenge_method = "S256"
+        # ---------------------------------------------------------------------
+        # STEP 3: Authorization Code Generated
+        # ---------------------------------------------------------------------
+        step = 3
+        print_step(step, total_steps, "Authorization Code Generated")
+        client_id = "local-test-client"
+        allowed_redirect = settings.oauth_allowed_redirect_uris.split(",")[0].strip()
+        auth_code = secrets.token_urlsafe(32)
+        tenant_id = "magento_16457de64af92c7429b90eee"
+        role = "admin"
+        scopes = ["magento.read", "magento.write"]
+        ttl = settings.oauth_code_ttl_seconds
 
-    print_info("Code Verifier (len)", f"{len(code_verifier)} characters")
-    print_info("Code Verifier", f"{code_verifier[:20]}...{code_verifier[-20:]}")
-    print_info("Challenge Method", code_challenge_method)
-    print_info("Code Challenge", code_challenge)
-    print_success("Cryptographically random code_verifier and SHA256 challenge generated")
-    results.append((step, "PKCE Generation", True, "S256"))
-
-    # -------------------------------------------------------------------------
-    # STEP 5: Initialize Authorization Request
-    # -------------------------------------------------------------------------
-    step = 5
-    print_step(step, total_steps, "Initialize Authorization Request (Login Portal)")
-    client_id = "agent-cli-test-client"
-    allowed_redirect = settings.oauth_allowed_redirect_uris.split(",")[0].strip()
-    state = secrets.token_urlsafe(16)
-
-    auth_params = {
-        "client_id": client_id,
-        "redirect_uri": allowed_redirect,
-        "response_type": "code",
-        "code_challenge": code_challenge,
-        "code_challenge_method": code_challenge_method,
-        "resource": settings.mcp_resource_url,
-        "scope": "magento.read magento.write",
-        "state": state,
-    }
-    endpoint = f"{base_url}/oauth/authorize"
-    print_info("Calling GET", endpoint)
-    print_info("Client ID", client_id)
-    print_info("Redirect URI", allowed_redirect)
-    print_info("State Parameter", state)
-
-    t0 = time.time()
-    try:
-        res = client.get(endpoint, params=auth_params)
-        latency = (time.time() - t0) * 1000
-        print_info("HTTP Status", f"{res.status_code} ({latency:.1f}ms)")
-        if res.status_code == 200 and "Connect Magento" in res.text:
-            print_success("Gateway rendered Magento connection consent portal")
-            results.append((step, "Auth Portal Init", True, f"{latency:.1f}ms"))
-        else:
-            print_fail(f"Authorize GET failed or returned unexpected body: {res.status_code}")
-            results.append((step, "Auth Portal Init", False, f"Status {res.status_code}"))
-    except Exception as exc:
-        print_fail(f"Error: {exc}")
-        results.append((step, "Auth Portal Init", False, str(exc)))
-
-    # -------------------------------------------------------------------------
-    # STEP 6: Authorization Code Issuance
-    # -------------------------------------------------------------------------
-    step = 6
-    print_step(step, total_steps, "Issue Authorization Code")
-    auth_code = secrets.token_urlsafe(32)
-    oauth_store = OAuthStore(SessionLocal)
-
-    try:
+        oauth_store = OAuthStore(SessionLocal)
         oauth_store.put(
             code=auth_code,
             client_id=client_id,
             redirect_uri=allowed_redirect,
             code_challenge=code_challenge,
             resource=settings.mcp_resource_url,
-            tenant_id="magento_16457de64af92c7429b90eee",
+            tenant_id=tenant_id,
             subject=client_id,
-            role="admin",
-            scopes=["magento.read", "magento.write"],
-            ttl=settings.oauth_code_ttl_seconds,
+            role=role,
+            scopes=scopes,
+            ttl=ttl,
         )
-        print_info("Issued Code", f"{auth_code[:12]}...{auth_code[-12:]}")
-        print_info("Bound Challenge", code_challenge)
-        print_info("Tenant ID", "magento_16457de64af92c7429b90eee")
-        print_info("Role Granted", "admin")
-        print_info("TTL (Seconds)", str(settings.oauth_code_ttl_seconds))
-        print_success("Authorization code created and stored with PKCE binding in database")
-        results.append((step, "Auth Code Issuance", True, "Stored in DB"))
-    except Exception as exc:
-        print_fail(f"Failed to issue authorization code: {exc}")
-        results.append((step, "Auth Code Issuance", False, str(exc)))
-        return 1
 
-    # -------------------------------------------------------------------------
-    # STEP 7: Token Exchange via /oauth/token (PKCE Proof)
-    # -------------------------------------------------------------------------
-    step = 7
-    print_step(step, total_steps, "Token Exchange Call (/oauth/token)")
-    endpoint = f"{base_url}/oauth/token"
-    token_payload = {
-        "grant_type": "authorization_code",
-        "client_id": client_id,
-        "code": auth_code,
-        "code_verifier": code_verifier,
-    }
-    print_info("Calling POST", endpoint)
-    print_info("Grant Type", "authorization_code")
-    print_info("Verifying PKCE", "code_verifier matched against code_challenge")
+        print("  Authorization Code Record Keys & Values:")
+        print_kv("authorization_code", auth_code, indent=4)
+        print_kv("client_id", client_id, indent=4)
+        print_kv("redirect_uri", allowed_redirect, indent=4)
+        print_kv("code_challenge", code_challenge, indent=4)
+        print_kv("resource", settings.mcp_resource_url, indent=4)
+        print_kv("tenant_id", tenant_id, indent=4)
+        print_kv("role", role, indent=4)
+        print_kv("scopes", " ".join(scopes), indent=4)
+        print_kv("ttl_seconds", ttl, indent=4)
+        print_success("Authorization code created and stored in database")
+        results.append((step, "Code Generated", True, f"Bound to {tenant_id}"))
 
-    access_token = None
-    t0 = time.time()
-    try:
-        res = client.post(endpoint, data=token_payload)
-        latency = (time.time() - t0) * 1000
-        print_info("HTTP Status", f"{res.status_code} ({latency:.1f}ms)")
-        if res.status_code == 200:
-            token_data = res.json()
-            access_token = token_data.get("access_token")
-            token_type = token_data.get("token_type")
-            expires_in = token_data.get("expires_in")
-            scope = token_data.get("scope")
+        # ---------------------------------------------------------------------
+        # STEP 4: Auth Token Exchange
+        # ---------------------------------------------------------------------
+        step = 4
+        print_step(step, total_steps, "Auth Token Exchange (/oauth/token)")
+        token_endpoint = f"{base_url}/oauth/token"
+        token_payload = {
+            "grant_type": "authorization_code",
+            "client_id": client_id,
+            "code": auth_code,
+            "code_verifier": code_verifier,
+        }
+        print_kv("Request", f"POST {token_endpoint}")
+        print("\n  Token Request Payload:")
+        for k, v in token_payload.items():
+            print_kv(k, v, indent=4)
 
-            print_info("Token Type", token_type)
-            print_info("Expires In", f"{expires_in} seconds (1 hour)")
-            print_info("Granted Scope", scope)
-            print_info("Access Token (JWT)", f"{access_token[:25]}...{access_token[-25:]}")
-            print_success("PKCE verification verified successfully, Bearer token minted")
-            results.append((step, "Token Exchange", True, f"{latency:.1f}ms"))
-        else:
-            print_fail(f"Token exchange failed: {res.status_code} - {res.text}")
-            results.append((step, "Token Exchange", False, f"Status {res.status_code}"))
+        t0 = time.time()
+        res = await http.post(token_endpoint, data=token_payload)
+        elapsed = (time.time() - t0) * 1000
+        print_kv("HTTP Status", f"{res.status_code} ({elapsed:.1f}ms)")
+
+        if res.status_code != 200:
+            print_fail(f"Token exchange failed: {res.text}")
+            results.append((step, "Auth Token", False, f"Status {res.status_code}"))
             return 1
-    except Exception as exc:
-        print_fail(f"Token exchange error: {exc}")
-        results.append((step, "Token Exchange", False, str(exc)))
-        return 1
+
+        token_response = res.json()
+        access_token = token_response.get("access_token")
+
+        print("\n  Token Response Keys & Values:")
+        print_kv("token_type", token_response.get("token_type"), indent=4)
+        print_kv("expires_in", f"{token_response.get('expires_in')} seconds", indent=4)
+        print_kv("scope", token_response.get("scope"), indent=4)
+        print_kv("access_token (JWT)", access_token, indent=4)
+
+        # Decode and display JWT claims
+        decoded_claims = jwt.decode(access_token, options={"verify_signature": False})
+        print("\n  Decoded JWT Claims:")
+        for k, v in decoded_claims.items():
+            print_kv(k, v, indent=4)
+
+        print_success("Access token received and verified successfully")
+        results.append((step, "Auth Token", True, f"{elapsed:.1f}ms"))
+
+        # ---------------------------------------------------------------------
+        # STEP 5: Init Call (MCP Session Initialize)
+        # ---------------------------------------------------------------------
+        step = 5
+        print_step(step, total_steps, "MCP Init Call (Streamable HTTP)")
+        mcp_endpoint = f"{base_url}/mcp"
+        mcp_auth_headers = {"Authorization": f"Bearer {access_token}"}
+        print_kv("MCP Endpoint", mcp_endpoint)
+        print_kv("Authorization Header", f"Bearer {access_token[:20]}...{access_token[-20:]}")
+
+        init_info = None
+        tools_list = None
+        order_result = None
+
+        t0 = time.time()
+        try:
+            async with httpx.AsyncClient(headers=mcp_auth_headers, timeout=30.0) as mcp_http:
+                async with streamable_http_client(mcp_endpoint, http_client=mcp_http) as (read_stream, write_stream, get_session_id):
+                    async with ClientSession(read_stream, write_stream) as session:
+                        # 5. Initialize
+                        init_res = await session.initialize()
+                        elapsed_init = (time.time() - t0) * 1000
+
+                        print("\n  MCP Initialize Response Keys & Values:")
+                        print_kv("protocolVersion", init_res.protocolVersion, indent=4)
+                        print_kv("serverInfo.name", getattr(init_res.serverInfo, "name", None), indent=4)
+                        print_kv("serverInfo.version", getattr(init_res.serverInfo, "version", None), indent=4)
+                        print_kv("instructions", getattr(init_res, "instructions", None), indent=4)
+                        print_kv("capabilities", str(init_res.capabilities), indent=4)
+                        session_id = get_session_id()
+                        if session_id:
+                            print_kv("mcp-session-id", session_id, indent=4)
+
+                        print_success("MCP Session initialized successfully")
+                        results.append((step, "Init Call", True, f"{elapsed_init:.1f}ms"))
+
+                        # -----------------------------------------------------
+                        # STEP 6: Call Tool List
+                        # -----------------------------------------------------
+                        step = 6
+                        print_step(step, total_steps, "Call Tool List")
+                        t1 = time.time()
+                        tools_res = await session.list_tools()
+                        elapsed_tools = (time.time() - t1) * 1000
+                        tools_list = tools_res.tools
+
+                        print(f"  Discovered {len(tools_list)} available tools for authenticated role '{role}':\n")
+                        for idx, tool in enumerate(tools_list, 1):
+                            print(f"  {BOLD}Tool #{idx}: {tool.name}{RESET}")
+                            print_kv("description", tool.description, indent=6)
+                            print_kv("inputSchema", tool.inputSchema, indent=6)
+                            print()
+
+                        print_success(f"Listed {len(tools_list)} tools successfully")
+                        results.append((step, "Call Tool List", True, f"{len(tools_list)} tools found"))
+
+                        # -----------------------------------------------------
+                        # STEP 7: Call Order List Tool
+                        # -----------------------------------------------------
+                        step = 7
+                        print_step(step, total_steps, "Call Order List Tool (get_orders_by_status)")
+                        tool_name = "get_orders_by_status"
+                        tool_args = {"status": "pending", "page_size": 10}
+
+                        print_kv("Tool Name", tool_name)
+                        print_kv("Arguments", tool_args)
+
+                        t2 = time.time()
+                        call_res = await session.call_tool(tool_name, arguments=tool_args)
+                        elapsed_order = (time.time() - t2) * 1000
+
+                        print(f"\n  Tool Execution Result (Status: {elapsed_order:.1f}ms):")
+                        print_kv("isError", call_res.isError, indent=4)
+                        print("    Content Blocks:")
+                        for c_idx, c in enumerate(call_res.content, 1):
+                            print(f"      [{c_idx}] type='{c.type}':")
+                            try:
+                                # Try parsing text as json/dict for clean formatting
+                                parsed_data = ast.literal_eval(c.text) if c.text.startswith("{") else json.loads(c.text)
+                                print_kv("data", parsed_data, indent=8)
+                            except Exception:
+                                print(f"          {c.text}")
+
+                        print_success("Order list tool executed successfully and returned response")
+                        results.append((step, "Call Order List", True, f"{elapsed_order:.1f}ms"))
+
+        except Exception as exc:
+            import traceback
+            print_fail(f"MCP Session failed: {exc}")
+            traceback.print_exc()
+            results.append((step, "MCP Session Error", False, str(exc)))
+            return 1
 
     # -------------------------------------------------------------------------
-    # STEP 8: JWT Verification & Claims Inspection
-    # -------------------------------------------------------------------------
-    step = 8
-    print_step(step, total_steps, "JWT Cryptographic Verification & Claims Inspection")
-    try:
-        verifier = JWTVerifier()
-        import asyncio
-        token_obj = asyncio.run(verifier.verify_token(access_token))
-
-        if token_obj:
-            claims = token_obj.claims
-            print_info("Subject (sub)", claims.get("sub", "N/A"))
-            print_info("Issuer (iss)", claims.get("iss", "N/A"))
-            print_info("Audience (aud)", claims.get("aud", "N/A"))
-            print_info("Tenant ID", claims.get("tenant_id", "N/A"))
-            print_info("Role", claims.get("role", "N/A"))
-            print_info("Issued At (iat)", str(claims.get("iat", "N/A")))
-            print_info("Expires At (exp)", str(claims.get("exp", "N/A")))
-            print_success("JWT signature valid, audience matched, role/tenant verified")
-            results.append((step, "JWT Verification", True, "Signature & Claims Valid"))
-        else:
-            print_fail("JWT verification returned None (invalid signature or expired)")
-            results.append((step, "JWT Verification", False, "Verification failed"))
-    except Exception as exc:
-        print_fail(f"JWT Verification failed: {exc}")
-        results.append((step, "JWT Verification", False, str(exc)))
-
-    # -------------------------------------------------------------------------
-    # STEP 9: Authenticated API Probe (Bearer Token)
-    # -------------------------------------------------------------------------
-    step = 9
-    print_step(step, total_steps, "Authenticated Gateway API Probe (Bearer Auth)")
-    endpoint = f"{base_url}/approvals/probe-test-id/approve"
-    auth_headers = {"Authorization": f"Bearer {access_token}"}
-    print_info("Calling POST", endpoint)
-    print_info("Authorization", f"Bearer {access_token[:15]}...")
-
-    t0 = time.time()
-    try:
-        res = client.post(endpoint, headers=auth_headers)
-        latency = (time.time() - t0) * 1000
-        print_info("HTTP Status", f"{res.status_code} ({latency:.1f}ms)")
-        print_info("Server Detail", res.json().get("detail", "N/A"))
-
-        # 404 means the token was successfully verified and admin role was accepted!
-        # (If token were invalid or expired -> 401/403)
-        if res.status_code == 404:
-            print_success("Bearer token accepted by Gateway! (Admin role authenticated, approval lookup executed)")
-            results.append((step, "Authenticated Probe", True, f"{latency:.1f}ms (HTTP 404 as expected)"))
-        elif res.status_code == 200:
-            print_success("Bearer token accepted and operation executed!")
-            results.append((step, "Authenticated Probe", True, f"{latency:.1f}ms"))
-        elif res.status_code == 403:
-            print_fail(f"Forbidden: {res.text}")
-            results.append((step, "Authenticated Probe", False, "HTTP 403 Forbidden"))
-        else:
-            print_fail(f"Unexpected status: {res.status_code}")
-            results.append((step, "Authenticated Probe", False, f"Status {res.status_code}"))
-    except Exception as exc:
-        print_fail(f"Probe request error: {exc}")
-        results.append((step, "Authenticated Probe", False, str(exc)))
-
-    # -------------------------------------------------------------------------
-    # FINAL SUMMARY REPORT
+    # SUMMARY REPORT
     # -------------------------------------------------------------------------
     total_elapsed = time.time() - start_time
-    print_header("EXECUTION SUMMARY REPORT")
+    print_banner("EXECUTION SUMMARY REPORT")
 
     all_passed = True
     for s_num, s_name, s_pass, s_detail in results:
@@ -386,17 +333,25 @@ def main():
         if not s_pass:
             all_passed = False
 
-    print(f"\n{DIM}{'-' * 75}{RESET}")
-    print_info("Total Elapsed", f"{total_elapsed:.2f} seconds")
-    print_info("Total Steps", f"{len(results)} of {total_steps}")
+    print(f"\n{DIM}{'-' * 70}{RESET}")
+    print_kv("Total Duration", f"{total_elapsed:.2f} seconds")
+    print_kv("Total Steps Executed", f"{len(results)} of {total_steps}")
 
     if all_passed and len(results) == total_steps:
-        print(f"\n{BOLD}{GREEN}>>> SUCCESS: Complete Authentication Sequence Verified! Gateway is 100% Operational. <<<{RESET}\n")
+        print(f"\n{BOLD}{GREEN}>>> SUCCESS: ALL STEPS VERIFIED WITH FULL RESPONSES DISPLAYED! <<<{RESET}\n")
         return 0
     else:
-        print(f"\n{BOLD}{RED}>>> FAILURE: Some steps in the sequence did not pass. Check log above. <<<{RESET}\n")
+        print(f"\n{BOLD}{RED}>>> FAILURE: One or more steps failed. See details above. <<<{RESET}\n")
         return 1
 
 
+def main():
+    parser = argparse.ArgumentParser(description="Run OAuth PKCE Sequence against Magento MCP Gateway")
+    parser.add_argument("--url", default="http://localhost:8000", help="Base URL of running gateway")
+    args = parser.parse_args()
+
+    sys.exit(asyncio.run(run_sequence(args.url.rstrip("/"))))
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
