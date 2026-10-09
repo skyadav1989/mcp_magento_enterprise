@@ -1,0 +1,1 @@
+"""Magento MCP Gateway package."""
