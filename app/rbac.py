@@ -1,7 +1,19 @@
 ROLE_TOOLS = {
-    'support_agent': {'get_orders_by_status'},
-    'cms_admin': {'get_orders_by_status', 'update_product_description'},
-    'admin': {'get_orders_by_status', 'update_product_description'},
+    'support_agent': {'get_orders_by_status', 'get_product_by_sku', 'get_product_list'},
+    'cms_admin': {
+        'get_orders_by_status',
+        'get_product_by_sku',
+        'get_product_list',
+        'update_product_description',
+        'add_media_for_sku',
+    },
+    'admin': {
+        'get_orders_by_status',
+        'get_product_by_sku',
+        'get_product_list',
+        'update_product_description',
+        'add_media_for_sku',
+    },
 }
 
 

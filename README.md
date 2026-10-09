@@ -13,14 +13,14 @@ Built with **FastAPI**, **Streamable HTTP MCP**, **OAuth 2.1 + PKCE (S256)**, **
 - **Zero-Token-Exposure Security**: Magento Integration Access Tokens are encrypted at rest with Fernet (`cryptography.fernet`) and never placed inside client JWT tokens.
 - **Multi-Tenant Isolation**: Stores and customer credentials are partitioned deterministically by OAuth `subject` and `tenant_id`.
 - **Role-Based Access Control (RBAC)**:
-  - `support_agent`: Read-only access (`get_orders_by_status`).
-  - `cms_admin` / `admin`: Full access (`get_orders_by_status`, `update_product_description`).
+  - `support_agent`: Read-only access (`get_orders_by_status`, `get_product_by_sku`, `get_product_list`).
+  - `cms_admin` / `admin`: Full access (`get_orders_by_status`, `get_product_by_sku`, `get_product_list`, `update_product_description`, `add_media_for_sku`).
 - **Human-in-the-Loop Approval Workflow**:
-  - High-risk operations (e.g. `update_product_description`) pause automatically and issue an `approval_id`.
-  - Built-in password-protected **Web Approval Dashboard** at `/approvals`.
-  - 1-click approval with instant prompt generation for ChatGPT.
+  - High-risk operations (e.g. `update_product_description`, `add_media_for_sku`) pause automatically and issue an `approval_id`.
+  - Built-in password-protected **Web Approval Dashboard** at `/approvals` with live image preview & 1-click approvals.
+  - Instant prompt generation for ChatGPT.
 - **Full Test Suite & Diagnostics**:
-  - 30 unit & integration test cases (`pytest`).
+  - 34 unit & integration test cases (`pytest`).
   - 16-point system verification runner (`verify_gateway.py`).
   - Complete live sequence runner (`auth_flow_sequence.py`).
 
@@ -31,7 +31,10 @@ Built with **FastAPI**, **Streamable HTTP MCP**, **OAuth 2.1 + PKCE (S256)**, **
 | Tool Name | Allowed Roles | Description | Requires Approval |
 | :--- | :--- | :--- | :---: |
 | `get_orders_by_status` | `support_agent`, `cms_admin`, `admin` | Fetches store orders filtered by Magento order status (`pending`, `processing`, `complete`, etc.) with pagination. | No |
-| `update_product_description` | `cms_admin`, `admin` | Updates product description by SKU via Magento REST API. | **Yes** (when `REQUIRE_PRODUCT_UPDATE_APPROVAL=true`) |
+| `get_product_by_sku` | `support_agent`, `cms_admin`, `admin` | Fetches detailed product information (ID, name, price, status, type, attributes, media entries) by SKU. | No |
+| `get_product_list` | `support_agent`, `cms_admin`, `admin` | Lists catalog products with pagination (`page_size`, `current_page`) and optional name search keyword filter. | No |
+| `update_product_description` | `cms_admin`, `admin` | Updates product description by SKU via Magento REST API. | **Yes** (Human approval required) |
+| `add_media_for_sku` | `cms_admin`, `admin` | Uploads product image/media (base64 data, label, mime type, roles) for a given SKU. | **Yes** (Human approval required) |
 
 ---
 

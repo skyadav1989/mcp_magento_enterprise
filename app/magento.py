@@ -75,3 +75,100 @@ class MagentoClient:
         async with self._client() as client:
             response=await client.put(f'/rest/V1/products/{quote(sku,safe="")}',json=payload); response.raise_for_status(); data=response.json()
         return {'sku':data.get('sku',sku),'name':data.get('name'),'status':data.get('status'),'message':'Product description updated successfully'}
+
+    async def get_product_by_sku(self, sku: str) -> dict:
+        async with self._client() as client:
+            response = await client.get(f'/rest/V1/products/{quote(sku, safe="")}')
+            response.raise_for_status()
+            data = response.json()
+        return {
+            'id': data.get('id'),
+            'sku': data.get('sku', sku),
+            'name': data.get('name'),
+            'price': data.get('price'),
+            'status': data.get('status'),
+            'type_id': data.get('type_id'),
+            'weight': data.get('weight'),
+            'attribute_set_id': data.get('attribute_set_id'),
+            'custom_attributes': data.get('custom_attributes', []),
+            'media_gallery_entries': data.get('media_gallery_entries', []),
+        }
+
+    async def get_product_list(self, page_size: int = 20, current_page: int = 1, search_term: str = "") -> dict:
+        page_size = min(max(page_size, 1), 100)
+        current_page = max(current_page, 1)
+        params = {
+            'searchCriteria[pageSize]': page_size,
+            'searchCriteria[currentPage]': current_page,
+        }
+        if search_term:
+            params.update({
+                'searchCriteria[filter_groups][0][filters][0][field]': 'name',
+                'searchCriteria[filter_groups][0][filters][0][value]': f'%{search_term}%',
+                'searchCriteria[filter_groups][0][filters][0][condition_type]': 'like',
+            })
+        async with self._client() as client:
+            response = await client.get('/rest/V1/products', params=params)
+            response.raise_for_status()
+            data = response.json()
+        return {
+            'total_count': data.get('total_count', 0),
+            'page_size': page_size,
+            'current_page': current_page,
+            'products': [
+                {
+                    'id': item.get('id'),
+                    'sku': item.get('sku'),
+                    'name': item.get('name'),
+                    'price': item.get('price'),
+                    'status': item.get('status'),
+                    'type_id': item.get('type_id'),
+                }
+                for item in data.get('items', [])
+            ],
+        }
+
+    async def add_media_for_sku(
+        self,
+        sku: str,
+        base64_data: str,
+        label: str = "Product Image",
+        mime_type: str = "image/jpeg",
+        file_name: str = "",
+        types: list[str] | None = None,
+        position: int = 1,
+        disabled: bool = False,
+    ) -> dict:
+        if types is None:
+            types = ["image", "small_image", "thumbnail"]
+        if not file_name:
+            ext = "png" if "png" in mime_type.lower() else ("webp" if "webp" in mime_type.lower() else "jpg")
+            file_name = f"{sku}_image.{ext}"
+
+        payload = {
+            "entry": {
+                "media_type": "image",
+                "label": label,
+                "position": position,
+                "disabled": disabled,
+                "types": types,
+                "content": {
+                    "base64_encoded_data": base64_data,
+                    "type": mime_type,
+                    "name": file_name,
+                },
+            }
+        }
+        async with self._client() as client:
+            response = await client.post(f'/rest/V1/products/{quote(sku, safe="")}/media', json=payload)
+            response.raise_for_status()
+            result = response.json()
+        return {
+            'sku': sku,
+            'media_id': result,
+            'label': label,
+            'file_name': file_name,
+            'types': types,
+            'message': 'Product media added successfully',
+        }
+

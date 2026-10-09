@@ -160,6 +160,116 @@ TOOL_DEFINITIONS = {
             ],
         },
     ),
+
+    "get_product_by_sku": Tool(
+        name="get_product_by_sku",
+        description=(
+            "Retrieve details for a specific Magento product by its SKU, "
+            "including name, price, status, type, attributes, and media entries."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "sku": {
+                    "type": "string",
+                    "description": "The SKU of the product to look up.",
+                    "minLength": 1,
+                    "maxLength": 128,
+                },
+            },
+            "required": ["sku"],
+        },
+    ),
+
+    "get_product_list": Tool(
+        name="get_product_list",
+        description=(
+            "List products from the Magento store with pagination and optional "
+            "search keyword filter by product name."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "page_size": {
+                    "type": "integer",
+                    "description": "Number of products per page (1-100).",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "default": 20,
+                },
+                "current_page": {
+                    "type": "integer",
+                    "description": "Page number to retrieve (1-based).",
+                    "minimum": 1,
+                    "default": 1,
+                },
+                "search_term": {
+                    "type": "string",
+                    "description": "Optional search term to filter products by name.",
+                    "default": "",
+                },
+            },
+        },
+    ),
+
+    "add_media_for_sku": Tool(
+        name="add_media_for_sku",
+        description=(
+            "Add product image/media for a given SKU. "
+            "Requires human approval before the image is uploaded."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "sku": {
+                    "type": "string",
+                    "description": "The SKU of the product to add the image to.",
+                    "minLength": 1,
+                    "maxLength": 128,
+                },
+                "base64_data": {
+                    "type": "string",
+                    "description": "Base64-encoded image data.",
+                    "minLength": 1,
+                },
+                "label": {
+                    "type": "string",
+                    "description": "Image label / alt text.",
+                    "default": "Product Image",
+                },
+                "mime_type": {
+                    "type": "string",
+                    "description": "Image MIME type, e.g. image/jpeg, image/png, image/webp.",
+                    "default": "image/jpeg",
+                },
+                "file_name": {
+                    "type": "string",
+                    "description": "Optional file name, e.g. front_view.jpg. Generated automatically if omitted.",
+                },
+                "types": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Magento image roles: ['image', 'small_image', 'thumbnail'].",
+                    "default": ["image", "small_image", "thumbnail"],
+                },
+                "position": {
+                    "type": "integer",
+                    "description": "Display order position.",
+                    "default": 1,
+                },
+                "disabled": {
+                    "type": "boolean",
+                    "description": "Whether the image is disabled / hidden.",
+                    "default": False,
+                },
+                "approval_id": {
+                    "type": "string",
+                    "description": "Approval ID issued after approval has been granted via /approvals.",
+                },
+            },
+            "required": ["sku", "base64_data"],
+        },
+    ),
 }
 
 
@@ -425,6 +535,163 @@ def build_server(
                 result = await client.update_product_description(
                     sku=sku,
                     description=description,
+                )
+
+                return [
+                    TextContent(
+                        type="text",
+                        text=str(result),
+                    )
+                ]
+
+            # --------------------------------------------------
+            # GET PRODUCT BY SKU
+            # --------------------------------------------------
+
+            if name == "get_product_by_sku":
+
+                sku = str(arguments.get("sku", "")).strip()
+                if not sku:
+                    raise ValueError("sku is required")
+
+                result = await client.get_product_by_sku(sku=sku)
+
+                return [
+                    TextContent(
+                        type="text",
+                        text=str(result),
+                    )
+                ]
+
+            # --------------------------------------------------
+            # GET PRODUCT LIST
+            # --------------------------------------------------
+
+            if name == "get_product_list":
+
+                page_size = int(arguments.get("page_size", 20))
+                if page_size < 1 or page_size > 100:
+                    raise ValueError("page_size must be between 1 and 100")
+
+                current_page = int(arguments.get("current_page", 1))
+                if current_page < 1:
+                    raise ValueError("current_page must be at least 1")
+
+                search_term = str(arguments.get("search_term", "")).strip()
+
+                result = await client.get_product_list(
+                    page_size=page_size,
+                    current_page=current_page,
+                    search_term=search_term,
+                )
+
+                return [
+                    TextContent(
+                        type="text",
+                        text=str(result),
+                    )
+                ]
+
+            # --------------------------------------------------
+            # ADD MEDIA FOR SKU
+            # --------------------------------------------------
+
+            if name == "add_media_for_sku":
+
+                sku = str(arguments.get("sku", "")).strip()
+                if not sku:
+                    raise ValueError("sku is required")
+
+                base64_data = str(arguments.get("base64_data", "")).strip()
+                if not base64_data:
+                    raise ValueError("base64_data is required")
+
+                label = str(arguments.get("label", "Product Image")).strip() or "Product Image"
+                mime_type = str(arguments.get("mime_type", "image/jpeg")).strip() or "image/jpeg"
+                file_name = str(arguments.get("file_name", "")).strip()
+                raw_types = arguments.get("types")
+                if not isinstance(raw_types, list) or not raw_types:
+                    types = ["image", "small_image", "thumbnail"]
+                else:
+                    types = [str(t) for t in raw_types]
+                position = int(arguments.get("position", 1))
+                disabled = bool(arguments.get("disabled", False))
+
+                call_params = {
+                    "sku": sku,
+                    "base64_data": base64_data,
+                    "label": label,
+                    "mime_type": mime_type,
+                    "file_name": file_name,
+                    "types": types,
+                    "position": position,
+                    "disabled": disabled,
+                }
+
+                # ----------------------------------------------
+                # Approval workflow
+                # ----------------------------------------------
+
+                if settings.require_product_update_approval:
+
+                    approval_id = arguments.get("approval_id")
+
+                    if not approval_id:
+
+                        approval = approvals.create(
+                            tenant_id=tenant_id,
+                            subject=token.subject,
+                            tool=name,
+                            params=call_params,
+                        )
+
+                        return [
+                            TextContent(
+                                type="text",
+                                text=str(
+                                    {
+                                        "approval_required": True,
+                                        "approval_id": approval.approval_id,
+                                        "expires_at": approval.expires_at,
+                                        "message": (
+                                            "Human approval is required before the product "
+                                            "image/media can be added."
+                                        ),
+                                    }
+                                ),
+                            )
+                        ]
+
+                    # ------------------------------------------
+                    # Validate approval
+                    # ------------------------------------------
+
+                    approved = approvals.consume(
+                        approval_id,
+                        tenant_id,
+                        token.subject,
+                        name,
+                        call_params,
+                    )
+
+                    if not approved:
+                        raise PermissionError(
+                            "Invalid, expired, or already consumed approval."
+                        )
+
+                # ----------------------------------------------
+                # Magento add media
+                # ----------------------------------------------
+
+                result = await client.add_media_for_sku(
+                    sku=sku,
+                    base64_data=base64_data,
+                    label=label,
+                    mime_type=mime_type,
+                    file_name=file_name,
+                    types=types,
+                    position=position,
+                    disabled=disabled,
                 )
 
                 return [

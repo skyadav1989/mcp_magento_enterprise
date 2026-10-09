@@ -282,9 +282,13 @@ def main():
 
         ok_rbac = (
             "get_orders_by_status" in support_tools
+            and "get_product_by_sku" in support_tools
+            and "get_product_list" in support_tools
             and "update_product_description" not in support_tools
+            and "add_media_for_sku" not in support_tools
             and "update_product_description" in admin_tools
-            and "update_product_description" in cms_tools
+            and "add_media_for_sku" in admin_tools
+            and "add_media_for_sku" in cms_tools
         )
         log_test("Role Permission Matrix", ok_rbac, f"support_agent: {support_tools}, admin: {admin_tools}")
     except Exception as exc:

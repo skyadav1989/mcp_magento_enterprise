@@ -83,9 +83,55 @@ def build_dashboard_html(items, message: str = "", active_id: str = "") -> str:
                 else f'<span class="badge pending"><span class="dot"></span>Awaiting Approval ({time_str})</span>'
             )
 
-            chatgpt_msg = html.escape(
-                f"The request has been approved. Please retry updating the product description for SKU {sku} with approval_id: {appr_id}"
-            )
+            if item.tool == "add_media_for_sku":
+                chatgpt_msg = html.escape(
+                    f"The request has been approved. Please retry adding media for SKU {sku} with approval_id: {appr_id}"
+                )
+                label_val = html.escape(str(item.params.get("label", "Product Image")))
+                mime_val = html.escape(str(item.params.get("mime_type", "image/jpeg")))
+                file_name_val = html.escape(str(item.params.get("file_name", "N/A")))
+                raw_t = item.params.get("types", [])
+                types_val = html.escape(", ".join(raw_t) if isinstance(raw_t, list) else str(raw_t))
+                b64_val = str(item.params.get("base64_data", ""))
+
+                img_preview = ""
+                if b64_val:
+                    img_preview = f"""
+                    <div style="margin-top: 10px;">
+                        <img src="data:{mime_val};base64,{b64_val}" alt="Media Preview" style="max-height: 180px; max-width: 100%; border-radius: 8px; border: 1px solid rgba(255,255,255,0.15); box-shadow: 0 4px 12px rgba(0,0,0,0.3);" />
+                    </div>
+                    """
+
+                details_html = f"""
+                    <div class="meta-row">
+                        <span class="meta-label">Image Label:</span>
+                        <span class="meta-value">{label_val}</span>
+                    </div>
+                    <div class="meta-row">
+                        <span class="meta-label">File Name:</span>
+                        <span class="meta-value"><code>{file_name_val}</code></span>
+                    </div>
+                    <div class="meta-row">
+                        <span class="meta-label">MIME / Roles:</span>
+                        <span class="meta-value"><code>{mime_val}</code> ({types_val})</span>
+                    </div>
+                    <div class="field-block">
+                        <span class="meta-label">Image Preview:</span>
+                        {img_preview}
+                    </div>
+                """
+            else:
+                chatgpt_msg = html.escape(
+                    f"The request has been approved. Please retry updating the product description for SKU {sku} with approval_id: {appr_id}"
+                )
+                details_html = f"""
+                    <div class="field-block">
+                        <span class="meta-label">New Description to Apply:</span>
+                        <div class="desc-box">
+                            <pre>{desc}</pre>
+                        </div>
+                    </div>
+                """
 
             action_ui = ""
             if item.approved:
@@ -143,12 +189,7 @@ def build_dashboard_html(items, message: str = "", active_id: str = "") -> str:
                         <span class="meta-value"><code>{tenant_id}</code></span>
                     </div>
 
-                    <div class="field-block">
-                        <span class="meta-label">New Description to Apply:</span>
-                        <div class="desc-box">
-                            <pre>{desc}</pre>
-                        </div>
-                    </div>
+                    {details_html}
                 </div>
 
                 {action_ui}

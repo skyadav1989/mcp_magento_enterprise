@@ -3,20 +3,35 @@ from unittest.mock import Mock
 
 def test_rbac_roles_tools():
     assert "get_orders_by_status" in allowed_tools("support_agent")
+    assert "get_product_by_sku" in allowed_tools("support_agent")
+    assert "get_product_list" in allowed_tools("support_agent")
     assert "update_product_description" not in allowed_tools("support_agent")
+    assert "add_media_for_sku" not in allowed_tools("support_agent")
 
     assert "get_orders_by_status" in allowed_tools("cms_admin")
+    assert "get_product_by_sku" in allowed_tools("cms_admin")
+    assert "get_product_list" in allowed_tools("cms_admin")
     assert "update_product_description" in allowed_tools("cms_admin")
+    assert "add_media_for_sku" in allowed_tools("cms_admin")
 
     assert "get_orders_by_status" in allowed_tools("admin")
+    assert "get_product_by_sku" in allowed_tools("admin")
+    assert "get_product_list" in allowed_tools("admin")
     assert "update_product_description" in allowed_tools("admin")
+    assert "add_media_for_sku" in allowed_tools("admin")
 
     assert allowed_tools("unknown_role") == set()
 
 def test_can_use():
     assert can_use("admin", "get_orders_by_status") is True
+    assert can_use("admin", "get_product_by_sku") is True
+    assert can_use("admin", "get_product_list") is True
     assert can_use("admin", "update_product_description") is True
+    assert can_use("admin", "add_media_for_sku") is True
+    assert can_use("support_agent", "get_product_by_sku") is True
+    assert can_use("support_agent", "get_product_list") is True
     assert can_use("support_agent", "update_product_description") is False
+    assert can_use("support_agent", "add_media_for_sku") is False
     assert can_use("unknown", "get_orders_by_status") is False
 
 def test_tenant_and_role():
